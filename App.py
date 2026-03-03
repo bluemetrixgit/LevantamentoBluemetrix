@@ -34,7 +34,6 @@ def carregar_dados():
             try:
                 df = pd.read_excel(excel_bytes, sheet_name=sheet_name, header=1)
                 df = df.dropna(how='all').reset_index(drop=True)
-                # Ignorar linhas de resumo final
                 palavras_resumo = ['Contas Ativas', 'Contas Inativas', 'Contas Encerradas', 'Contas Pode Operar']
                 df = df[~df.iloc[:, 1].astype(str).str.contains('|'.join(palavras_resumo), case=False, na=False)]
                 df["Corretora"] = sheet_name
@@ -60,28 +59,30 @@ if 'Conta' in df.columns:
 
 # ====================== EXTRAÇÃO DE DATAS DE PL ======================
 def extrair_datas_pl(df):
-    datas_pl = set()
+    datas_pl = []
     for col in df.columns:
         col_str = str(col).strip()
         if "/" in col_str and len(col_str.split("/")) == 3:
             try:
                 dt = pd.to_datetime(col_str, dayfirst=True, errors='coerce')
                 if pd.notna(dt):
-                    mes_ano = dt.strftime("%B/%Y")
-                    ano = dt.year
-                    mes_num = dt.month
-                    datas_pl.add((dt, mes_ano, col_str, ano, mes_num))
+                    # Formato YYYY-MM para ordenação correta
+                    ano_mes_sort = dt.strftime("%Y-%m")
+                    # Formato bonito para exibição: Abril/2025
+                    mes_ano_display = dt.strftime("%B/%Y")
+                    datas_pl.append((dt, ano_mes_sort, mes_ano_display, col_str))
             except:
                 continue
+    # Ordena pela data real (cronológica)
     return sorted(datas_pl, key=lambda x: x[0], reverse=True)
 
 datas_pl_disponiveis = extrair_datas_pl(df)
-opcoes_periodo = ["Mais recente"] + [f"{mes_ano} ({col})" for _, mes_ano, col, _, _ in datas_pl_disponiveis]
+opcoes_periodo = ["Mais recente"] + [f"{display} ({col})" for _, _, display, col in datas_pl_disponiveis]
 
 periodo_selecionado = st.sidebar.selectbox("Período do PL", opcoes_periodo)
 
 if periodo_selecionado == "Mais recente":
-    coluna_pl = datas_pl_disponiveis[0][2] if datas_pl_disponiveis else None
+    coluna_pl = datas_pl_disponiveis[0][3] if datas_pl_disponiveis else None
 else:
     coluna_pl = periodo_selecionado.split("(")[-1].strip(")")
 
@@ -93,22 +94,18 @@ def extrair_pl_especifico(row, col_pl):
 
 df[["PL", "Data_PL"]] = df.apply(lambda row: pd.Series(extrair_pl_especifico(row, coluna_pl)), axis=1)
 
-# Conversão internacional
 internacional = ["Interactive Brokers", "Pershing", "XP Internacional"]
 df.loc[df["Corretora"].isin(internacional), "PL"] = (df.loc[df["Corretora"].isin(internacional), "PL"] * USD_TO_BRL).round(0)
 
 # ====================== FILTROS NA SIDEBAR ======================
 st.sidebar.header("🔎 Filtros Gerais")
-
 filtro_escritorio = st.sidebar.multiselect("Escritório", sorted(df["Escritório"].dropna().unique()))
 filtro_corretora = st.sidebar.multiselect("Corretora", sorted(df["Corretora"].unique()))
 filtro_uf = st.sidebar.multiselect("UF", sorted(df["UF"].dropna().unique()))
 
-# Filtro de Status (ex-aba de status)
 status_opcoes = ["Todos"] + sorted(df["Status"].dropna().unique().tolist())
 filtro_status = st.sidebar.multiselect("Status da Conta", status_opcoes, default=["Todos"])
 
-# Aplicação dos filtros
 df_filtrado = df.copy()
 if filtro_escritorio: df_filtrado = df_filtrado[df_filtrado["Escritório"].isin(filtro_escritorio)]
 if filtro_corretora: df_filtrado = df_filtrado[df_filtrado["Corretora"].isin(filtro_corretora)]
@@ -116,13 +113,12 @@ if filtro_uf:        df_filtrado = df_filtrado[df_filtrado["UF"].isin(filtro_uf)
 if "Todos" not in filtro_status and filtro_status:
     df_filtrado = df_filtrado[df_filtrado["Status"].isin(filtro_status)]
 
-# Colunas de exibição
 colunas_exibicao = [
     "Corretora", "Cliente", "Conta", "Escritório", "UF", "Assessor", "Carteira",
     "Status", "Início da Gestão", "Data distrato", "PL", "Data_PL"
 ]
 
-# ====================== TABS (5 abas) ======================
+# ====================== TABS ======================
 tab_geral, tab_cliente, tab_fluxo, tab_evolucao, tab_assessor = st.tabs([
     "📊 Visão Geral",
     "👤 Por Cliente",
@@ -131,9 +127,7 @@ tab_geral, tab_cliente, tab_fluxo, tab_evolucao, tab_assessor = st.tabs([
     "👥 PL por Assessor"
 ])
 
-# ────────────────────────────────────────────────
 # ABA 1: VISÃO GERAL
-# ────────────────────────────────────────────────
 with tab_geral:
     st.header("Visão Geral")
     col1, col2, col3 = st.columns(3)
@@ -146,17 +140,13 @@ with tab_geral:
         hide_index=True
     )
 
-# ────────────────────────────────────────────────
-# ABA 2: POR CLIENTE
-# ────────────────────────────────────────────────
+# ABA 2: POR CLIENTE (mantido igual)
 with tab_cliente:
     st.header("Consolidado por Cliente")
     busca = st.text_input("🔍 Nome (ou parte)", placeholder="Ex: Alessandra Charbel")
-    
     if busca.strip():
         mask = df_filtrado["Cliente"].astype(str).str.contains(busca.strip(), case=False, na=False)
         df_cliente = df_filtrado[mask].copy()
-        
         if not df_cliente.empty:
             st.success(f"**Patrimônio Total Consolidado ({periodo_selecionado}): R$ {df_cliente['PL'].sum():,.0f}**")
             st.dataframe(
@@ -166,21 +156,18 @@ with tab_cliente:
         else:
             st.warning("Nenhuma conta encontrada.")
 
-# ────────────────────────────────────────────────
-# ABA 3: FLUXO MENSAL/ANUAL
-# ────────────────────────────────────────────────
+# ABA 3: FLUXO MENSAL/ANUAL (mantido)
 with tab_fluxo:
     st.header("Contas Novas × Encerramentos por Mês/Ano")
-    
     df["Início da Gestão"] = pd.to_datetime(df["Início da Gestão"], errors='coerce', dayfirst=True)
     df["Data distrato"]     = pd.to_datetime(df["Data distrato"],     errors='coerce', dayfirst=True)
     
     novos = df[df["Início da Gestão"].notna()].copy()
-    novos["Ano-Mês"] = novos["Início da Gestão"].dt.to_period("M").astype(str)
+    novos["Ano-Mês"] = novos["Início da Gestão"].dt.strftime("%Y-%m")
     novos_por_mes = novos.groupby("Ano-Mês").size().reset_index(name="Novas")
     
     encerrados = df[df["Data distrato"].notna()].copy()
-    encerrados["Ano-Mês"] = encerrados["Data distrato"].dt.to_period("M").astype(str)
+    encerrados["Ano-Mês"] = encerrados["Data distrato"].dt.strftime("%Y-%m")
     encerrados_por_mes = encerrados.groupby("Ano-Mês").size().reset_index(name="Encerradas")
     
     fluxo = pd.merge(novos_por_mes, encerrados_por_mes, on="Ano-Mês", how="outer").fillna(0)
@@ -194,19 +181,17 @@ with tab_fluxo:
     )
     st.plotly_chart(fig, use_container_width=True)
 
-# ────────────────────────────────────────────────
-# ABA 4: EVOLUÇÃO PL TOTAL POR MÊS/ANO
-# ────────────────────────────────────────────────
+# ABA 4: EVOLUÇÃO PL TOTAL
 with tab_evolucao:
     st.header("Evolução do Patrimônio Total por Mês/Ano")
     
     pl_por_periodo = []
-    for _, mes_ano, col, ano, mes_num in datas_pl_disponiveis:
+    for _, ano_mes_sort, mes_ano_display, col in datas_pl_disponiveis:
         pl_val = df[col].apply(pd.to_numeric, errors='coerce').sum()
         if pd.notna(pl_val):
             pl_por_periodo.append({
-                "Ano-Mês": mes_ano,
-                "Ano": ano,
+                "Ano-Mês": ano_mes_sort,           # para ordenação correta
+                "Período": mes_ano_display,        # para exibição bonita
                 "PL Total": round(pl_val)
             })
     
@@ -217,19 +202,24 @@ with tab_evolucao:
         x="Ano-Mês",
         y="PL Total",
         title="Evolução do PL Total",
-        markers=True
+        markers=True,
+        hover_name="Período"
     )
-    fig_evol.update_layout(yaxis_tickformat="R$ ,.0f")
+    fig_evol.update_traces(textposition="top center")
+    fig_evol.update_layout(
+        xaxis_title="Período",
+        yaxis_title="PL Total",
+        yaxis_tickformat="R$ ,.0f",
+        xaxis_tickformat="%b/%Y"  # mostra como Abr/2025 no eixo
+    )
     st.plotly_chart(fig_evol, use_container_width=True)
     
     st.dataframe(
-        df_evol.style.format({"PL Total": "R$ {:,.0f}"}),
+        df_evol[["Período", "PL Total"]].style.format({"PL Total": "R$ {:,.0f}"}),
         hide_index=True
     )
 
-# ────────────────────────────────────────────────
 # ABA 5: PL POR ASSESSOR
-# ────────────────────────────────────────────────
 with tab_assessor:
     st.header("Evolução do PL por Assessor")
     
@@ -240,39 +230,41 @@ with tab_assessor:
         df_ass = df_filtrado[df_filtrado["Assessor"].isin(assessores_sel)].copy()
         
         pl_por_ass = []
-        for _, mes_ano, col, ano, mes_num in datas_pl_disponiveis:
+        for _, ano_mes_sort, mes_ano_display, col in datas_pl_disponiveis:
             for ass in assessores_sel:
                 pl_val = df_ass[(df_ass["Assessor"] == ass)][col].apply(pd.to_numeric, errors='coerce').sum()
                 if pd.notna(pl_val):
                     pl_por_ass.append({
-                        "Ano-Mês": mes_ano,
+                        "Ano-Mês": ano_mes_sort,
+                        "Período": mes_ano_display,
                         "Assessor": ass,
                         "PL": round(pl_val)
                     })
         
         df_pl_ass = pd.DataFrame(pl_por_ass).sort_values("Ano-Mês")
         
-        # Gráfico
         fig_ass = px.line(
             df_pl_ass,
             x="Ano-Mês",
             y="PL",
             color="Assessor",
             title="Evolução do PL por Assessor",
-            markers=True
+            markers=True,
+            hover_name="Período"
         )
-        fig_ass.update_layout(yaxis_tickformat="R$ ,.0f")
+        fig_ass.update_layout(
+            yaxis_tickformat="R$ ,.0f",
+            xaxis_tickformat="%b/%Y"
+        )
         st.plotly_chart(fig_ass, use_container_width=True)
         
         st.subheader("Tabela por Assessor e Período")
-        
-        # Correção: pivot_table com aggfunc para lidar com possíveis duplicatas
         tabela_pivot = df_pl_ass.pivot_table(
-            index="Ano-Mês",
+            index="Período",
             columns="Assessor",
             values="PL",
-            aggfunc='sum'  # soma caso haja duplicatas (segurança)
-        ).fillna(0)
+            aggfunc='sum'
+        ).fillna(0).sort_index(key=lambda x: pd.to_datetime(x, format="%B/%Y", errors='coerce'))
         
         st.dataframe(
             tabela_pivot.style.format("R$ {:,.0f}"),
